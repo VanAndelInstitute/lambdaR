@@ -137,7 +137,7 @@ cp /usr/lib64/libquadmath.so.0 /opt/lib
 
 ## Bootstrap
 
-We now need to create /opt/bootstrap that Lambda will call to do whatever we want to do with our new runtime.  Here is a trivial example. I will soon update this with a more useful example that calls the right script depending on the function handler in the lambda function.
+We now need to create /opt/bootstrap that Lambda will call to do whatever we want to do with our new runtime.  The bootstrap file below parses on the handler (e.g. "test.handler", reformats that to the name of an R script (.e.g "test.r") that should be provided along with your Lambda function (you can upload a zip file with one or more scripts in it when you creat the Lambda function), and then executes that script via `/opt/R/bin/Rscript`. It also retrieves metadata about the request, and sends the response back to let Lambda know it is finished. 
 
 ```
 #!/bin/sh
