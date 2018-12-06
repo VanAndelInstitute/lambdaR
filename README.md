@@ -142,16 +142,31 @@ We now need to create /opt/bootstrap that Lambda will call to do whatever we wan
 ```
 #!/bin/sh
 
-/opt/R/bin/R -e "cat(1)"
+# uncomment the following to stop execution on first error
+#set -euo pipefail
 
-RESPONSE="OK"
+# Initialization - load function handler
+SCRIPT=$LAMBDA_TASK_ROOT/$(echo "$_HANDLER" | cut -d. -f1).r
 
-HEADERS="$(mktemp)"
-EVENT_DATA=$(curl -sS -LD "$HEADERS" -X GET "http://${AWS_LAMBDA_RUNTIME_API}/2018-06-01/runtime/invocation/next")
-REQUEST_ID=$(grep -Fi Lambda-Runtime-Aws-Request-Id "$HEADERS" | tr -d '[:space:]' | cut -d: -f2)
-curl -X POST "http://${AWS_LAMBDA_RUNTIME_API}/2018-06-01/runtime/invocation/$REQUEST_ID/response"  -d "$RESPONSE"
+while true
+do
+    # Get an event
+    HEADERS="$(mktemp)"
+    EVENT_DATA=$(curl -sS -LD "$HEADERS" -X GET "http://${AWS_LAMBDA_RUNTIME_API}/2018-06-01/runtime/invocation/next")
+    REQUEST_ID=$(grep -Fi Lambda-Runtime-Aws-Request-Id "$HEADERS" | tr -d '[:space:]' | cut -d: -f2)
 
+    echo "About to run $SCRIPT"
+    # Execute the handler function from the script
+    RESULT=$(mktemp)
+    /opt/R/bin/Rscript $SCRIPT
+    RESPONSE="OK"
+
+    # Send the response
+    curl -X POST "http://${AWS_LAMBDA_RUNTIME_API}/2018-06-01/runtime/invocation/$REQUEST_ID/response"  -d "$RESPONSE"
+done
 ```
+Save this as /opt/bootstrap, and don't forget to `chmod 755` it to make it executable.
+
 
 ## Package it up
 
@@ -193,4 +208,4 @@ You are now all set to use the R runtime for your lambda functions.  Creata new 
 cat("Hello from planet lambdar!")
 ```
 
-Then zip it up and upload it into your Lambda function.  For the handler, you would specify "test.handler".  The bootstrap script above will parse out the "test" part and execute your "test.r" script (which gets installed in /var/task).  Well actually, the bootstrap function above won't do that, but it will as soon as I update it.
+Then zip it up and upload it into your Lambda function.  For the handler, you would specify "test.handler".  The bootstrap script above will parse out the "test" part and execute your "test.r" script (which gets installed in /var/task). 
