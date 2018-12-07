@@ -11,20 +11,20 @@ Note that you only need to do this once.  When you have a functional R runtime l
 
 ## Build Environment
 
-We want to build our toolchain in the same environment used by Lambda.  So create an instance (it doesn't take much...t2.small or medium should be fine) based on this AMI: `amzn-ami-hvm-2017.03.1.20170812-x86_64-gp2`.  SSH to that instance and update the AWS client tools (the one that comes with that AMI does not know about Lambda layers):
+We want to build our toolchain in the same environment used by Lambda.  So create an instance (it doesn't take much...t2.small or medium should be fine) based on the AMI used by Lambda, which as of this writing is this one: `amzn-ami-hvm-2017.03.1.20170812-x86_64-gp2`.  SSH to that instance and update the AWS client tools (the one that comes with that AMI does not know about Lambda layers):
 
 ```
 sudo pip install awscli --upgrade --user
 ```
 
-You will also need the development tools, and while we are at it, an editor:
+You will also need the development tools, and, while we are at it, an editor:
 
 ```
 sudo yum groupinstall -y "Development Tools"
 sudo yum -y install emacs-nox
 ```
 
-Lambda copies the layer contents into `/opt`, so will install things there to begin with (otherwise, R will get confused).  You will need to update your .bashrc so that the tools we build can find eachother. Here is how I have mym .bashrc configured (probably some of these lines are superfluous):
+Lambda copies the layer contents into `/opt`, so we will install things there to begin with (otherwise, R will get confused).  You will need to update your .bashrc so that the tools we build can find eachother. Here is how I have my .bashrc configured (probably some of these lines are superfluous):
 
 ```
 export PATH="$PATH:/opt/bin:/opt/lib:/opt/R/bin"
@@ -36,7 +36,9 @@ export CPLUS_INCLUDE_PATH="$CPLUS_INCLUDE_PATH:/opt/include"
 export CPATH="$CPATH:/opt/include"
 export LDFLAGS="-I/opt/lib"
 ```
-Make sure you start a new bash session before continuing to pick up these changes.
+Make sure you start a new bash session before continuing, so that these environment variables are loaded.
+
+## Building the dependencies
 
 I like to create a "build" directory and work in there.
 
@@ -45,9 +47,7 @@ mkdir ~/build
 cd ~/build
 ```
 
-## Building the dependencies
-
-R has a number of dependencies.  Rather than doing `yum install` and then trying to track down the pieces and put them in `/opt`, we will just build them and install into /opt.
+R has a number of dependencies.  Rather than doing `yum install` and then trying to track down the pieces and put them in `/opt`, we will just build them and install into /opt. Note that each tools needs a unique combination of config flags and make commands to generate the desired shared libraries with necessary features installed in the /opt file tree.
 
 ```
 # openssl
@@ -97,7 +97,7 @@ cd ..
 
 ## Building R
 
-Now we will build R with most options inactivated (because layers must be <50MB zipped).
+Now we will build R with most options inactivated (because layers must be <50MB zipped). You can tweak these options to suit your needs, but you may need to do additional pruning after building to get your zip file under 50MB.  Hopefully, larger layers will be supported by AWS soon.
 
 ```
 wget https://cran.r-project.org/src/base/R-3/R-3.5.1.tar.gz
@@ -112,7 +112,7 @@ sudo make install
 cd ..
 ```
 
-Unfortunately, if we zip the resulting build of R, it is a hair larger than 50MB.  So let's prune a couple things out we don't need.
+Unfortunately, even with this fairly restrictive set of options, the resulting R installation is a hair larger than 50MB when zipped up.  So let's prune a couple things out we don't need.
 
 ```
 sudo -s
@@ -137,7 +137,7 @@ cp /usr/lib64/libquadmath.so.0 /opt/lib
 
 ## Bootstrap
 
-We now need to create /opt/bootstrap that Lambda will call to do whatever we want to do with our new runtime.  The bootstrap file below parses on the handler (e.g. "test.handler", reformats that to the name of an R script (.e.g "test.r") that should be provided along with your Lambda function (you can upload a zip file with one or more scripts in it when you creat the Lambda function), and then executes that script via `/opt/R/bin/Rscript`. It also retrieves metadata about the request, and sends the response back to let Lambda know it is finished. 
+We now need to create `/opt/bootstrap` that Lambda will call to kick off our new runtime.  While not complicated, the `bootstrap` script is the magic sauce that allows a wide range of runtimes to be shoe-horned into the Lambda architecture.  The `bootstrap` file below parses the handler specified by your Lambda functions (e.g. "test.handler"), reformats that to the name of an R script (e.g. "test.r") and then executes that script via `/opt/R/bin/Rscript`. (Note that the corresponding script must be provided along with your Lambda function.  When you create a new Lambda function using the AWS web console, you are prompted for a zip file containing this script.) It also retrieves metadata about the request, and sends the response back to let Lambda know it is finished. 
 
 ```
 #!/bin/sh
@@ -167,10 +167,11 @@ done
 ```
 Save this as /opt/bootstrap, and don't forget to `chmod 755` it to make it executable.
 
+Obviously, we could get a lot more fancy by sending the script as a payload with the function request, passing environment variables, sending results to S3, etc. etc. Enhanced bootstrap scripts be provided in the future, and community contributions are solicited!
 
 ## Package it up
 
-Due to size constraints, we need to put R an its dependencies in separate layers, so we create two zipfiles (moving the aws folder out of the way as we do so)
+Due to size constraints, we need to put R and its dependencies in separate layers, so we create two zipfiles (moving the aws folder out of the way as we do so)
 
 ```
 sudo -s
@@ -202,10 +203,14 @@ aws s3 cp ../r.zip s3://YOURBUCKET/r.zip
 
 ## Done!
 
-You are now all set to use the R runtime for your lambda functions.  Creata new function, and add your two new layers to it. You will also need to upload an R script to do whatever you want to do with R.  For example, you could create a file `test.r` with this in it:
+You are now all set to use the R runtime for your lambda functions.  Create a new function, and add your two new layers to it. You will also need to upload an R script to do whatever you want to do with R.  For example, you could create a file `test.r` with this in it:
 
 ```
 cat("Hello from planet lambdar!")
 ```
 
 Then zip it up and upload it into your Lambda function.  For the handler, you would specify "test.handler".  The bootstrap script above will parse out the "test" part and execute your "test.r" script (which gets installed in /var/task). 
+
+## To Do
+
+I would like to add additional R libraries, and include the dependencies for building packages from source (including Rcpp).  This may require a third layer due to space constraints.
