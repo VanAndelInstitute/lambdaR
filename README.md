@@ -1,6 +1,3 @@
-# lambdaR
-Bringing R as runtime to AWS Lambda
-
 ## Overview
 
 AWS Lambda now supports [bring your own runtime](https://aws.amazon.com/blogs/aws/new-for-aws-lambda-use-any-programming-language-and-share-common-components/) via there minimalist runtime API. The basic idea is that you create a layer containing your runtime components, and an executable `bootstrap` script that glues together the task request and your runtime.
@@ -11,7 +8,7 @@ Note that you only need to do this once.  When you have a functional R runtime l
 
 ## Build Environment
 
-We want to build our toolchain in the same environment used by Lambda.  So create an instance (it doesn't take much...t2.small or medium should be fine) based on the AMI used by Lambda, which as of this writing is this one: `amzn-ami-hvm-2017.03.1.20170812-x86_64-gp2`.  SSH to that instance and update the AWS client tools (the one that comes with that AMI does not know about Lambda layers):
+We want to build our toolchain in the same environment used by Lambda.  So create an instance (it doesn't take much...t2.small or medium should be fine) based on the AMI used by Lambda, which as of this writing is this one: `amzn-ami-hvm-2018.03.0.20181129-x86_64-gp2`.  SSH to that instance and update the AWS client tools (the one that comes with that AMI does not know about Lambda layers):
 
 ```
 sudo pip install awscli --upgrade --user
@@ -95,14 +92,26 @@ sudo make install
 cd ..
 ```
 
+## Copying system dependencies
+
+There are a couple of libraries that were installed when we installed the Development Tools group that R depends on, but won't be there in the Lambda environment.  We will copy these into /opt/lib
+
+```
+cp /usr/lib64/libgfortran.so.3 /opt/lib
+cp /usr/lib64/libquadmath.so.0 /opt/lib
+
+```
+
 ## Building R
 
 Now we will build R with most options inactivated (because layers must be <50MB zipped). You can tweak these options to suit your needs, but you may need to do additional pruning after building to get your zip file under 50MB.  Hopefully, larger layers will be supported by AWS soon.
 
+Note that after issuing the "make" command, it is a good time to go get a cup of coffee.
+
 ```
-wget https://cran.r-project.org/src/base/R-3/R-3.5.1.tar.gz
-tar -zxvf R-3.5.1.tar.gz
-cd R-3.5.1
+wget https://cran.r-project.org/src/base/R-3/R-3.6.1.tar.gz
+tar -zxvf R-3.6.1.tar.gz
+cd R-3.6.1
 ./configure --prefix=/opt/R --enable-R-shlib --with-recommended-packages --with-x=no --with-aqua=no \
 	--with-tcltk=no --with-ICU=no --disable-java --disable-openmp --disable-nls --disable-largefile \
 	--disable-R-profiling --disable-BLAS-shlib --disable-rpath --with-libpng=no --with-jpeglib=no --with-libtiff=no \
@@ -111,8 +120,7 @@ make
 sudo make install
 cd ..
 ```
-
-Unfortunately, even with this fairly restrictive set of options, the resulting R installation is a hair larger than 50MB when zipped up.  So let's prune a couple things out we don't need.
+Let's prune a couple things out we don't need.
 
 ```
 sudo -s
@@ -125,14 +133,23 @@ mv /opt/R/lib64/R/library/en* /opt/R/lib64/R/library/translations/
 mv /opt/R/lib64/R/library/DESCRIPTION /opt/R/lib64/R/library/translations/
 ```
 
-## Copying system dependencies
+## Additional libraries
 
-There are a couple of libraries that were installed when we installed the Development Tools group that R depends on, but won't be there in the Lambda environment.  We will copy these into /opt/lib
+We will add the botor library and its dependencies as it might be useful for interacting with the AWS universe. However, 
+to stay under size limits, we are going to want to install additional libraries under a separate directory.
 
 ```
-cp /usr/lib64/libgfortran.so.3 /opt/lib
-cp /usr/lib64/libquadmath.so.0 /opt/lib
+sudo -s
+mkdir -p /opt/local/lib/R/site-library
+sudo /opt/R/bin/R
+install.packckages("botor", lib="/opt/local/lib/R/site-library")
+q()
+```
 
+To allow use of these packages "out of the box", we need to edit `/opt/R/lib64/R/etc/Renviron` to add:
+
+```
+R_LIBS_USER=${R_LIBS_USER-'/opt/local/lib/R/site-library'}
 ```
 
 ## Bootstrap
@@ -144,6 +161,9 @@ We now need to create `/opt/bootstrap` that Lambda will call to kick off our new
 
 # uncomment the following to stop execution on first error
 #set -euo pipefail
+
+# we will add python dependencies here later
+export PYTHONPATH=/opt/python
 
 # Initialization - load function handler
 SCRIPT=$LAMBDA_TASK_ROOT/$(echo "$_HANDLER" | cut -d. -f1).r
@@ -167,22 +187,36 @@ done
 ```
 Save this as /opt/bootstrap, and don't forget to `chmod 755` it to make it executable.
 
-Obviously, we could get a lot more fancy by sending the script as a payload with the function request, passing environment variables, sending results to S3, etc. etc. Enhanced bootstrap scripts be provided in the future, and community contributions are solicited!
+Obviously, we could get a lot more fancy by sending the script as a payload with the function request, passing environment variables, sending results to S3, etc. etc.
 
 ## Package it up
 
-Due to size constraints, we need to put R and its dependencies in separate layers, so we create two zipfiles (moving the aws folder out of the way as we do so)
+Due to size constraints, we need to put R, our extra libraries, and its dependencies in separate layers, so we create two zipfiles (moving the aws folder out of the way as we do so)
 
 ```
 sudo -s
 cd /opt
+chmod 755 bootstrap
 zip -r ../r.zip R
 mv R ../
 mv aws ../
+zip -r ../r_lib.zip local
+mv local ../local_hold
 zip -r ../subsystem.zip *
 mv ../R ./
 mv ../aws ./
+mv ../local_hold local
+```
 
+Although boto3 is allegedly installed on the AMI used by Lambda functions, I can't seem to find it. For example, `python -c "import boto3"` fails. And 
+loading the `botor` R package also fails. So for now, I create another layer to contain python dependencies.
+
+```
+mkdir python
+cd python
+pip install boto3 -t ./
+cd ..
+zip -r python_lib.zip python
 ```
 
 Assuming you have already run `aws configure` and entered your credentials, we can now push these to lambda layers.
@@ -190,27 +224,25 @@ Assuming you have already run `aws configure` and entered your credentials, we c
 ```
 aws lambda publish-layer-version --layer-name subsystem --zip-file fileb://../subsystem.zip
 aws lambda publish-layer-version --layer-name R --zip-file fileb://../r.zip
+aws lambda publish-layer-version --layer-name Python_lib --zip-file fileb://./python_lib.zip
 
 ```
 
-You can also push the zip files to S3 for future reference if you desire:
+You can then create a new lambda function through the AWS web console, adding the three layers about to it.
+
+You will need a function to call. For starters, we can try:
 
 ```
-aws s3 cp ../subsystem.zip s3://YOURBUCKET/subsystem.zip
-aws s3 cp ../r.zip s3://YOURBUCKET/r.zip
-
+library(botor)
+cat(s3_exists("s3://jlab-test/Doc1.rtf"))
 ```
 
-## Done!
-
-You are now all set to use the R runtime for your lambda functions.  Create a new function, and add your two new layers to it. You will also need to upload an R script to do whatever you want to do with R.  For example, you could create a file `test.r` with this in it:
+Save that as test.r, and zip it
 
 ```
-cat("Hello from planet lambdar!")
+zip test.zip test.r
 ```
 
-Then zip it up and upload it into your Lambda function.  For the handler, you would specify "test.handler".  The bootstrap script above will parse out the "test" part and execute your "test.r" script (which gets installed in /var/task). 
+You can then upload that as your function code (make sure to set the handler name as "test.handler")/
 
-## To Do
-
-I would like to add additional R libraries, and include the dependencies for building packages from source (including Rcpp).  This may require a third layer due to space constraints.
+Make sure to allocate enough memory to the lambda function. Failure to do so will result in failure with a time out. The clue will be the "Max Memory Used:" will be the same as "Memory Size" in the log output. Also make sure to allocate enough time. The default 3 seconds is not enough to load up the R runtime and execute even a basic test script. 
