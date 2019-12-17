@@ -21,7 +21,8 @@ sudo yum groupinstall -y "Development Tools"
 sudo yum -y install emacs-nox
 ```
 
-Lambda copies the layer contents into `/opt`, so we will install things there to begin with (otherwise, R will get confused).  You will need to update your .bashrc so that the tools we build can find eachother. Here is how I have my .bashrc configured (probably some of these lines are superfluous):
+Lambda copies the layer contents into `/opt`, so we will install things there to begin with (otherwise, R will get confused).  You will need to update your .bashrc so that the tools we build can find eachother. You should do this as root 
+as we will need these variables available later when installing R packages as root. Here is how I have my .bashrc configured (probably some of these lines are superfluous):
 
 ```
 export PATH="$PATH:/opt/bin:/opt/lib:/opt/R/bin"
@@ -34,6 +35,9 @@ export CPATH="$CPATH:/opt/include"
 export LDFLAGS="-I/opt/lib"
 ```
 Make sure you start a new bash session before continuing, so that these environment variables are loaded.
+
+Finally, run `aws configure` to enter your AWS credentials so that you can push lambda layers up to AWS below. Note that 
+the credentials you provide must be for an IAM user that has the AWSLambdaFullAccess permissions (you can actually be more granular than that, the key permission is lambda:PublishLayerVersion).
 
 ## Building the dependencies
 
@@ -90,6 +94,16 @@ cd pcre-8.42
 make 
 sudo make install
 cd ..
+
+# libxml2
+wget ftp://xmlsoft.org/libxml2/libxml2-2.9.9.tar.gz
+tar -zxvf libxml2-2.9.9.tar.gz
+cd libxml2-2.9.9
+./configure --prefix=/opt 
+make 
+sudo make install
+cd ..
+
 ```
 
 ## Copying system dependencies
@@ -135,14 +149,14 @@ mv /opt/R/lib64/R/library/DESCRIPTION /opt/R/lib64/R/library/translations/
 
 ## Additional libraries
 
-We will add the botor library and its dependencies as it might be useful for interacting with the AWS universe. However, 
+We will add the aws.s3 library and its dependencies (unlike the botor package, aws.s3 does not rely on Python. The paws package is another good option.) However, 
 to stay under size limits, we are going to want to install additional libraries under a separate directory.
 
 ```
 sudo -s
 mkdir -p /opt/local/lib/R/site-library
 sudo /opt/R/bin/R
-install.packckages("botor", lib="/opt/local/lib/R/site-library")
+install.packages("aws.s3", lib="/opt/local/lib/R/site-library")
 q()
 ```
 
@@ -208,6 +222,10 @@ mv ../aws ./
 mv ../local_hold local
 ```
 
+## Boto layer (DEPRECATED)
+
+This is no longer necessary, but I will leave this here in case I need to refer to it in the future:
+
 Although boto3 is allegedly installed on the AMI used by Lambda functions, I can't seem to find it. For example, `python -c "import boto3"` fails. And 
 loading the `botor` R package also fails. So for now, I create another layer to contain python dependencies.
 
@@ -219,22 +237,23 @@ cd ..
 zip -r python_lib.zip python
 ```
 
+## Push layers to AWS.
 Assuming you have already run `aws configure` and entered your credentials, we can now push these to lambda layers.
 
 ```
 aws lambda publish-layer-version --layer-name subsystem --zip-file fileb://../subsystem.zip
 aws lambda publish-layer-version --layer-name R --zip-file fileb://../r.zip
-aws lambda publish-layer-version --layer-name Python_lib --zip-file fileb://./python_lib.zip
+aws lambda publish-layer-version --layer-name Python_lib --zip-file fileb://./r_lib.zip
 
 ```
 
-You can then create a new lambda function through the AWS web console, adding the three layers about to it.
+You can then create a new lambda function through the AWS web console, adding the three layers above to it.
 
 You will need a function to call. For starters, we can try:
 
 ```
-library(botor)
-cat(s3_exists("s3://jlab-test/Doc1.rtf"))
+library(aws.s3)
+cat(bucket_exists("jlab-test"))
 ```
 
 Save that as test.r, and zip it
