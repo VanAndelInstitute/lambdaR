@@ -243,7 +243,7 @@ Assuming you have already run `aws configure` and entered your credentials, we c
 ```
 aws lambda publish-layer-version --layer-name subsystem --zip-file fileb://../subsystem.zip
 aws lambda publish-layer-version --layer-name R --zip-file fileb://../r.zip
-aws lambda publish-layer-version --layer-name Python_lib --zip-file fileb://./r_lib.zip
+aws lambda publish-layer-version --layer-name r_lib --zip-file fileb://../r_lib.zip
 
 ```
 
