@@ -254,7 +254,7 @@ mv ../local_hold local
 
 # Deployment 
 
-## Push layers to AWS
+## Push Layers To AWS
 
 Assuming you have already run `aws configure` and entered your credentials, we can now push these to lambda layers.
 
@@ -304,7 +304,7 @@ Save that as test.r, and zip it
 zip test.zip test.r
 ```
 
-Now we can deploy our function. Note the default timeout is 3 seconds which is not quite long enough for our runtime to load. We increase this to 10 seconds. Note also you will need to substitute the layer ARNs below with the actual ARNs returned by the [publish layer commands above](#exection-role). 
+Now we can deploy our function. Note the default timeout is 3 seconds which is not quite long enough for our runtime to load. We increase this to 10 seconds. Note also you will need to substitute the layer ARNs below with the actual ARNs returned by the [publish layer commands above](#push-layers-to-aws). 
 
 ```
 
