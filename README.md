@@ -304,7 +304,7 @@ Save that as test.r, and zip it
 zip test.zip test.r
 ```
 
-Now we can deploy our function. Note the default timeout is 3 seconds which is not quite long enough for our runtime to load. We increase this to 10 seconds. Note also you will need to substitute the layer ARNs below with the actual ARNs returned by the [publish layer commands above](#push-layers-to-aws). 
+Now we can deploy our function. Note the default timeout is 3 seconds which is not quite long enough for our runtime to load. We increase this to 10 seconds. (4 seconds is actually enough for this trivial example, but 10 will give more room for more complex functions. Very complex functions may require more time. The maximum execution time is 900 seconds.)Note also you will need to substitute the layer ARNs below with the actual ARNs returned by the [publish layer commands above](#push-layers-to-aws). 
 
 ```
 
@@ -319,4 +319,22 @@ aws lambda create-function \
     
 ```
 
-You can then go to the web console and open your function. You can click "test" and create a new test event. For this basic function, you do not need any parameters, but you can leave the default key/value pairs listed. 
+You can then go to the [lambda web console](https://console.aws.amazon.com/lambda/home) and open your function. You can click "test" and create a new test event. For this basic function, you do not need any parameters, but you can leave the default key/value pairs listed. 
+
+Alternatively, you can execute your function from the command line. The output will go to out.json in the example below.
+
+```
+aws lambda invoke \
+  --function-name lambda_r_test \
+  --invocation-type RequestResponse \
+  out.json  
+```
+
+If you want a little more detail then "OK",  you can request the log. However, this is returned base64 encoded, so must be decoded as follows as demonstrated by pjb on [stack overflow](https://stackoverflow.com/questions/52555724)
+
+```
+aws lambda invoke \
+  --function-name lambda_r_test \
+  --invocation-type RequestResponse \
+  --log-type Tail - | grep "LogResult"| awk -F'"' '{print $4}' | base64 --decode
+```
