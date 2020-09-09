@@ -1,4 +1,4 @@
-## Overview
+# Overview
 
 AWS Lambda now supports [bring your own runtime](https://aws.amazon.com/blogs/aws/new-for-aws-lambda-use-any-programming-language-and-share-common-components/) via there minimalist runtime API. The basic idea is that you create a layer containing your runtime components, and an executable `bootstrap` script that glues together the task request and your runtime.
 
@@ -6,9 +6,15 @@ Pretty basic in concept, but putting the pieces together for using the R runtime
 
 Note that you only need to do this once.  When you have a functional R runtime layer, you can use that layer for any lambda functions you create that require the R runtime.
 
-## Limitations
+# Limitations
 
 The approach detailed below does not include support for Rcpp (nor installing packages requiring building from source during lambda function execution) as it does not include the build tools in the lambda layers. In theory, these dependencies could be included in another layer although I have not determined exactly what the minimum set of libraries and tools is at this point.
+
+# Quick Start
+
+Details are given below on building the runtime environment to generate the lambda layers required, containing the system dependencies, R, and R packages (in three layers to keep each under the limit of 50M). However, the resulting layers are also included in this repository. For those not interested in the details, you can skip to [deployment](#deployment). Note that the credentials you provide must be for an IAM user that has the AWSLambdaFullAccess permissions (you can actually be more granular than that, the key permission is lambda:PublishLayerVersion) and also IAMFullAccess to create roles and permissions for your Lambda functions (again, you can be more granular if you wish).
+
+# Building Tools and Dependencies
 
 ## Build Environment
 
@@ -46,7 +52,7 @@ Make sure you start a new bash session before continuing, so that these environm
 Finally, run `aws configure` to enter your AWS credentials so that you can push lambda layers up to AWS below. Note that 
 the credentials you provide must be for an IAM user that has the AWSLambdaFullAccess permissions (you can actually be more granular than that, the key permission is lambda:PublishLayerVersion) and also IAMFullAccess to create roles and permissions for your Lambda functions (again, you can be more granular if you wish).
 
-## Building the dependencies
+## Building The Dependencies
 
 I like to create a "build" directory and work in there.
 
@@ -113,7 +119,7 @@ cd ..
 
 ```
 
-## Copying system dependencies
+## Copying System Dependencies
 
 There are a couple of libraries that were installed when we installed the Development Tools group that R depends on, but won't be there in the Lambda environment.  We will copy these into /opt/lib
 
@@ -155,7 +161,7 @@ mv /opt/R/lib64/R/library/en* /opt/R/lib64/R/library/translations/
 mv /opt/R/lib64/R/library/DESCRIPTION /opt/R/lib64/R/library/translations/
 ```
 
-## Additional libraries
+## Additional Libraries
 
 We will add the aws.s3 library and its dependencies (unlike the botor package, aws.s3 does not rely on Python. The paws package is another good option.) However, 
 to stay under size limits, we are going to want to install additional libraries under a separate directory.
@@ -168,7 +174,7 @@ install.packages("aws.s3", lib="/opt/local/lib/R/site-library")
 q()
 ```
 
-## Move libraries
+## Move Libraries
 
 We need to move a couple of the base libraries to our site-library folder so each layer is under 50M
 
@@ -190,7 +196,7 @@ R_LIBS_USER=${R_LIBS_USER-'/opt/local/lib/R/site-library'}
 ```
 
 
-## Bootstrap
+# Bootstrap
 
 We now need to create `/opt/bootstrap` that Lambda will call to kick off our new runtime.  While not complicated, the `bootstrap` script is the magic sauce that allows a wide range of runtimes to be shoe-horned into the Lambda architecture.  The `bootstrap` file below parses the handler specified by your Lambda functions (e.g. "test.handler"), reformats that to the name of an R script (e.g. "test.r") and then executes that script via `/opt/R/bin/Rscript`. (Note that the corresponding script must be provided along with your Lambda function.  When you create a new Lambda function using the AWS web console, you are prompted for a zip file containing this script.) It also retrieves metadata about the request, and sends the response back to let Lambda know it is finished.  Create the following file as root.
 
@@ -228,7 +234,7 @@ Save this as /opt/bootstrap, and don't forget to `chmod 755` it to make it execu
 
 Obviously, we could get a lot more fancy by sending the script as a payload with the function request, passing environment variables, sending results to S3, etc. etc.
 
-## Package it up
+# Package It Up
 
 Due to size constraints, we need to put R, our extra libraries, and its dependencies in separate layers, so we create two zipfiles (moving the aws folder out of the way as we do so)
 
@@ -246,22 +252,10 @@ mv ../aws ./
 mv ../local_hold local
 ```
 
-## Boto layer (DEPRECATED)
+# Deployment 
 
-This is no longer necessary, but I will leave this here in case I need to refer to it in the future:
+## Push layers to AWS
 
-Although boto3 is allegedly installed on the AMI used by Lambda functions, I can't seem to find it. For example, `python -c "import boto3"` fails. And 
-loading the `botor` R package also fails. So for now, I create another layer to contain python dependencies.
-
-```
-mkdir python
-cd python
-pip install boto3 -t ./
-cd ..
-zip -r python_lib.zip python
-```
-
-## Push layers to AWS.
 Assuming you have already run `aws configure` and entered your credentials, we can now push these to lambda layers.
 
 ```
@@ -271,9 +265,9 @@ aws lambda publish-layer-version --layer-name r_lib --zip-file fileb://../r_lib.
 
 ```
 
-Take note of the ARNs returned by these functions as you will need them layer to identify your layers. (Although you can always look them up later in the web console.)
+Take note of the ARNs (Amazon Resource Names) returned by these functions as you will need them later to identify your layers. Note, however, you can always look them up later in the web console. Indeed, everything from this point forward can be accomplished [via the web console](https://docs.aws.amazon.com/lambda/latest/dg/getting-started.html). However, using the AWC CLI from the command line is convenient for automation and documentation. Thefore, the command line approach will be demonstrated here. 
 
-## Execution role
+## Execution Role
 
 You will need to create an AWS role with which to execute your lambda function. When you create a lambda function through the AWS web console, this role is created for you. But you can also do it from the command line. First create a file name `trust_policy.json` with these content:
 
@@ -298,8 +292,7 @@ Then run this command:
 aws iam create-role --role-name Lambda-R-Role --asume-role-policy-document file://trust_policy.json
 ```
 
-You can then create a new lambda function through the AWS web console or the command line client. You will need a handler (R script) 
-to call. For starters, we can try:
+You can then create a new lambda function through the AWS web console or the command line client. You will need a handler (R script) to call. For starters, we can try:
 
 ```
 print("Hello from planet lambdar")
@@ -311,7 +304,7 @@ Save that as test.r, and zip it
 zip test.zip test.r
 ```
 
-Now we can deploy our function. Note the default timeout is 3 seconds which is not quite long enough for our runtime to load. We increase this to 10 seconds.
+Now we can deploy our function. Note the default timeout is 3 seconds which is not quite long enough for our runtime to load. We increase this to 10 seconds. Note also you will need to substitute the layer ARNs below with the actual ARNs returned by the [publish layer commands above](#exection-role). 
 
 ```
 
