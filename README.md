@@ -34,8 +34,7 @@ sudo yum groupinstall -y "Development Tools"
 sudo yum -y install emacs-nox
 ```
 
-Lambda copies the layer contents into `/opt`, so we will install things there to begin with (otherwise, R will get confused).  You will need to update your .bashrc so that the tools we build can find eachother. You should do this as root 
-as we will need these variables available later when installing R packages as root. Here is how I have my root .bashrc configured (probably some of these lines are superfluous):
+Lambda copies the layer contents into `/opt`, so we will install things there to begin with (otherwise, R will get confused).  You will need to update your .bashrc so that the tools we build can find eachother. You should do this as root as we will need these variables available later when installing R packages as root. Here is how I have my root .bashrc configured (probably some of these lines are superfluous):
 
 ```
 export PATH="$PATH:/opt/bin:/opt/lib:/opt/R/bin"
@@ -47,10 +46,10 @@ export CPLUS_INCLUDE_PATH="$CPLUS_INCLUDE_PATH:/opt/include"
 export CPATH="$CPATH:/opt/include"
 export LDFLAGS="-I/opt/lib"
 ```
+
 Make sure you start a new bash session before continuing, so that these environment variables are loaded.
 
-Finally, run `aws configure` to enter your AWS credentials so that you can push lambda layers up to AWS below. Note that 
-the credentials you provide must be for an IAM user that has the AWSLambdaFullAccess permissions (you can actually be more granular than that, the key permission is lambda:PublishLayerVersion) and also IAMFullAccess to create roles and permissions for your Lambda functions (again, you can be more granular if you wish).
+Finally, run `aws configure` to enter your AWS credentials so that you can push lambda layers up to AWS below. Note that the credentials you provide must be for an [IAM user](https://console.aws.amazon.com/iam/home#/users) that has the AWSLambdaFullAccess permissions (you can actually be more granular than that, the key permission is lambda:PublishLayerVersion) and also IAMFullAccess to create roles and permissions for your Lambda functions (again, you can be more granular if you wish). You create a user and retrieve the user secret and key from the web console. 
 
 ## Building The Dependencies
 
@@ -254,6 +253,11 @@ mv ../local_hold local
 
 # Deployment 
 
+## AWS Credentials
+
+If you have skipped over the above steps and just want to use the pre-made layers included in this repo, make sure you have run `aws configure` to enter your AWS credentials (otherwise the below will not work). As noted above, the credentials you provide must be for an [IAM user](https://console.aws.amazon.com/iam/home#/users) that has the AWSLambdaFullAccess permissions (you can actually be more granular than that, the key permission is lambda:PublishLayerVersion) and also IAMFullAccess to create roles and permissions for your Lambda functions (again, you can be more granular if you wish). You create a user and retrieve the user secret and key from the web console. 
+
+
 ## Push Layers To AWS
 
 Assuming you have already run `aws configure` and entered your credentials, we can now push these to lambda layers.
@@ -338,3 +342,21 @@ aws lambda invoke \
   --invocation-type RequestResponse \
   --log-type Tail - | grep "LogResult"| awk -F'"' '{print $4}' | base64 --decode
 ```
+
+This should give something like:
+
+```
+START RequestId: bc9de9a2-99aa-4a97-a602-8f4e087f1949 Version: $LATEST
+About to run /var/task/test.r
+[1] "Hello from planet lambdar."
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100    18  100    16  100     2    432     54 --:--:-- --:--:-- --:--:--   486
+{"status":"OK"}
+END RequestId: bc9de9a2-99aa-4a97-a602-8f4e087f1949
+REPORT RequestId: bc9de9a2-99aa-4a97-a602-8f4e087f1949	Duration: 3084.78 ms	Billed Duration: 3100 ms
+Memory Size: 128 MB	Max Memory Used: 98 MB
+```
+# Troubleshooting
+
+If the above does not work, examine the log messages. The most common problems I encounter relate to role permissions. Your lambda functions must run under an IAM role that has permission to execute lambda functions. As you add functionality in your R scripts, you will need to be sure the role has permissions to access any AWS resources your script needs (such as S3 access, etc.)
