@@ -6,12 +6,19 @@ Pretty basic in concept, but putting the pieces together for using the R runtime
 
 Note that you only need to do this once.  When you have a functional R runtime layer, you can use that layer for any lambda functions you create that require the R runtime.
 
+## Limitations
+
+The approach detailed below does not include support for Rcpp (nor installing packages requiring building from source during lambda function execution) as it does not include the build tools in the lambda layers. In theory, these dependencies could be included in another layer although I have not determined exactly what the minimum set of libraries and tools is at this point.
+
 ## Build Environment
 
 We want to build our toolchain in the same environment used by Lambda.  So create an instance (it doesn't take much...t2.small or medium should be fine) based on the AMI used by Lambda, which as of this writing is this one: `amzn-ami-hvm-2018.03.0.20181129-x86_64-gp2`.  SSH to that instance and update the AWS client tools (the one that comes with that AMI does not know about Lambda layers):
 
 ```
-sudo pip install awscli --upgrade --user
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+
 ```
 
 You will also need the development tools, and, while we are at it, an editor:
@@ -22,7 +29,7 @@ sudo yum -y install emacs-nox
 ```
 
 Lambda copies the layer contents into `/opt`, so we will install things there to begin with (otherwise, R will get confused).  You will need to update your .bashrc so that the tools we build can find eachother. You should do this as root 
-as we will need these variables available later when installing R packages as root. Here is how I have my .bashrc configured (probably some of these lines are superfluous):
+as we will need these variables available later when installing R packages as root. Here is how I have my root .bashrc configured (probably some of these lines are superfluous):
 
 ```
 export PATH="$PATH:/opt/bin:/opt/lib:/opt/R/bin"
@@ -37,7 +44,7 @@ export LDFLAGS="-I/opt/lib"
 Make sure you start a new bash session before continuing, so that these environment variables are loaded.
 
 Finally, run `aws configure` to enter your AWS credentials so that you can push lambda layers up to AWS below. Note that 
-the credentials you provide must be for an IAM user that has the AWSLambdaFullAccess permissions (you can actually be more granular than that, the key permission is lambda:PublishLayerVersion).
+the credentials you provide must be for an IAM user that has the AWSLambdaFullAccess permissions (you can actually be more granular than that, the key permission is lambda:PublishLayerVersion) and also IAMFullAccess to create roles and permissions for your Lambda functions (again, you can be more granular if you wish).
 
 ## Building the dependencies
 
@@ -111,8 +118,8 @@ cd ..
 There are a couple of libraries that were installed when we installed the Development Tools group that R depends on, but won't be there in the Lambda environment.  We will copy these into /opt/lib
 
 ```
-cp /usr/lib64/libgfortran.so.3 /opt/lib
-cp /usr/lib64/libquadmath.so.0 /opt/lib
+sudo cp /usr/lib64/libgfortran.so.3 /opt/lib
+sudo cp /usr/lib64/libquadmath.so.0 /opt/lib
 
 ```
 
@@ -123,13 +130,13 @@ Now we will build R with most options inactivated (because layers must be <50MB 
 Note that after issuing the "make" command, it is a good time to go get a cup of coffee.
 
 ```
-wget https://cran.r-project.org/src/base/R-3/R-3.6.1.tar.gz
-tar -zxvf R-3.6.1.tar.gz
-cd R-3.6.1
+wget https://cran.r-project.org/src/base/R-4/R-4.0.2.tar.gz
+tar -zxvf R-4.0.2.tar.gz
+cd R-4.0.2
 ./configure --prefix=/opt/R --enable-R-shlib --with-recommended-packages --with-x=no --with-aqua=no \
 	--with-tcltk=no --with-ICU=no --disable-java --disable-openmp --disable-nls --disable-largefile \
 	--disable-R-profiling --disable-BLAS-shlib --disable-rpath --with-libpng=no --with-jpeglib=no --with-libtiff=no \
-	--with-readline=no
+	--with-readline=no --with-pcre1
 make
 sudo make install
 cd ..
@@ -140,6 +147,7 @@ Let's prune a couple things out we don't need.
 sudo -s
 cd /opt
 rm -rf /opt/R/lib64/R/library/tcltk
+rm -rf /opt/R/lib64/R/doc/manual
 mv /opt/R/lib64/R/library/translations/en* /opt/R/lib64/R/library/
 mv /opt/R/lib64/R/library/translations/DESCRIPTION /opt/R/lib64/R/library/
 rm -rf /opt/R/lib64/R/library/translations/*
@@ -155,20 +163,36 @@ to stay under size limits, we are going to want to install additional libraries 
 ```
 sudo -s
 mkdir -p /opt/local/lib/R/site-library
-sudo /opt/R/bin/R
+/opt/R/bin/R
 install.packages("aws.s3", lib="/opt/local/lib/R/site-library")
 q()
 ```
 
-To allow use of these packages "out of the box", we need to edit `/opt/R/lib64/R/etc/Renviron` to add:
+## Move libraries
+
+We need to move a couple of the base libraries to our site-library folder so each layer is under 50M
+
+```
+sudo -s
+mv /opt/R/lib64/R/library/survival /opt/local/lib/R/site-library
+mv /opt/R/lib64/R/library/Matrix /opt/local/lib/R/site-library
+mv /opt/R/lib64/R/library/lattice /opt/local/lib/R/site-library
+
+```
+
+To allow use of these packages "out of the box", we need to edit `/opt/R/lib64/R/etc/Renviron` to comment out any existing R_LIB_USER definitions and add our site-library. 
+The resulting passage of Renviron should look approximately like this:
 
 ```
 R_LIBS_USER=${R_LIBS_USER-'/opt/local/lib/R/site-library'}
+#R_LIBS_USER=${R_LIBS_USER-'~/R/x86_64-pc-linux-gnu-library/4.0'}
+#R_LIBS_USER=${R_LIBS_USER-'~/Library/R/4.0/library'}
 ```
+
 
 ## Bootstrap
 
-We now need to create `/opt/bootstrap` that Lambda will call to kick off our new runtime.  While not complicated, the `bootstrap` script is the magic sauce that allows a wide range of runtimes to be shoe-horned into the Lambda architecture.  The `bootstrap` file below parses the handler specified by your Lambda functions (e.g. "test.handler"), reformats that to the name of an R script (e.g. "test.r") and then executes that script via `/opt/R/bin/Rscript`. (Note that the corresponding script must be provided along with your Lambda function.  When you create a new Lambda function using the AWS web console, you are prompted for a zip file containing this script.) It also retrieves metadata about the request, and sends the response back to let Lambda know it is finished. 
+We now need to create `/opt/bootstrap` that Lambda will call to kick off our new runtime.  While not complicated, the `bootstrap` script is the magic sauce that allows a wide range of runtimes to be shoe-horned into the Lambda architecture.  The `bootstrap` file below parses the handler specified by your Lambda functions (e.g. "test.handler"), reformats that to the name of an R script (e.g. "test.r") and then executes that script via `/opt/R/bin/Rscript`. (Note that the corresponding script must be provided along with your Lambda function.  When you create a new Lambda function using the AWS web console, you are prompted for a zip file containing this script.) It also retrieves metadata about the request, and sends the response back to let Lambda know it is finished.  Create the following file as root.
 
 ```
 #!/bin/sh
@@ -176,10 +200,11 @@ We now need to create `/opt/bootstrap` that Lambda will call to kick off our new
 # uncomment the following to stop execution on first error
 #set -euo pipefail
 
-# we will add python dependencies here later
+# we can add python dependencies here later if needed
 export PYTHONPATH=/opt/python
 
-# Initialization - load function handler
+# Convert ".handler" to ".r" (isn't technically needed, but allows us 
+# to name scripts with .r suffix like usual)
 SCRIPT=$LAMBDA_TASK_ROOT/$(echo "$_HANDLER" | cut -d. -f1).r
 
 while true
@@ -210,7 +235,6 @@ Due to size constraints, we need to put R, our extra libraries, and its dependen
 ```
 sudo -s
 cd /opt
-chmod 755 bootstrap
 zip -r ../r.zip R
 mv R ../
 mv aws ../
@@ -247,13 +271,38 @@ aws lambda publish-layer-version --layer-name r_lib --zip-file fileb://../r_lib.
 
 ```
 
-You can then create a new lambda function through the AWS web console, adding the three layers above to it.
+Take note of the ARNs returned by these functions as you will need them layer to identify your layers. (Although you can always look them up later in the web console.)
 
-You will need a function to call. For starters, we can try:
+## Execution role
+
+You will need to create an AWS role with which to execute your lambda function. When you create a lambda function through the AWS web console, this role is created for you. But you can also do it from the command line. First create a file name `trust_policy.json` with these content:
 
 ```
-library(aws.s3)
-cat(bucket_exists("jlab-test"))
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "lambda.amazonaws.com"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
+```
+
+Then run this command:
+
+```
+aws iam create-role --role-name Lambda-R-Role --asume-role-policy-document file://trust_policy.json
+```
+
+You can then create a new lambda function through the AWS web console or the command line client. You will need a handler (R script) 
+to call. For starters, we can try:
+
+```
+print("Hello from planet lambdar")
 ```
 
 Save that as test.r, and zip it
@@ -262,6 +311,19 @@ Save that as test.r, and zip it
 zip test.zip test.r
 ```
 
-You can then upload that as your function code (make sure to set the handler name as "test.handler")/
+Now we can deploy our function. Note the default timeout is 3 seconds which is not quite long enough for our runtime to load. We increase this to 10 seconds.
 
-Make sure to allocate enough memory to the lambda function. Failure to do so will result in failure with a time out. The clue will be the "Max Memory Used:" will be the same as "Memory Size" in the log output. Also make sure to allocate enough time. The default 3 seconds is not enough to load up the R runtime and execute even a basic test script. 
+```
+
+aws lambda create-function \
+    --role arn:aws:iam::436870896339:role/Lambda-R-Role \
+    --layers "arn:aws:lambda:us-east-1:436870896339:layer:R:1" "arn:aws:lambda:us-east-1:436870896339:layer:r_lib:1" "arn:aws:lambda:us-east-1:436870896339:layer:subsystem:1" \
+    --function-name lambda_r_test \
+    --runtime provided \
+    --timeout 10 \
+    --zip-file fileb://test.zip \
+    --handler test.handler 
+    
+```
+
+You can then go to the web console and open your function. You can click "test" and create a new test event. For this basic function, you do not need any parameters, but you can leave the default key/value pairs listed. 
