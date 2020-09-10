@@ -1,10 +1,10 @@
 # Overview
 
-AWS Lambda now supports [bring your own runtime](https://aws.amazon.com/blogs/aws/new-for-aws-lambda-use-any-programming-language-and-share-common-components/) via there minimalist runtime API. The basic idea is that you create a layer containing your runtime components, and an executable `bootstrap` script that glues together the task request and your runtime. Pretty basic in concept, but putting the pieces together for using the R runtime took a little effort.  The steps are described here. Note that you only need to do this once.  When you have a functional R runtime layer, you can use that layer for any lambda functions you create that require the R runtime.
+AWS Lambda now supports [bring your own runtime](https://aws.amazon.com/blogs/aws/new-for-aws-lambda-use-any-programming-language-and-share-common-components/) via their minimalist runtime API. The basic idea is that you create a layer containing your runtime components, and an executable `bootstrap` script that glues together the task request and your runtime. Pretty basic in concept, but putting the pieces together for using the R runtime took a little effort.  The steps are described here. Note that you only need to do this once.  When you have a functional R runtime layer, you can use that layer for any lambda functions you create that require the R runtime.
 
 # Limitations
 
-The approach detailed below does not include support for Rcpp (nor installing packages requiring building from source during lambda function execution) as it does not include the build tools in the lambda layers. In theory, these dependencies could be included in another layer although I have not determined exactly what the minimum set of libraries and tools is at this point.
+The approach detailed below does not include support for Rcpp (nor installing packages requiring building from source during lambda function execution) as it does not include the build tools in the lambda layers. In theory, these dependencies could be included in another layer although I have not determined exactly what the minimum set of libraries and tools is at this point. 
 
 # Quick Start
 
@@ -43,9 +43,9 @@ export CPATH="$CPATH:/opt/include"
 export LDFLAGS="-I/opt/lib"
 ```
 
-Make sure you start a new bash session before continuing, so that these environment variables are loaded.
+Make sure you start a new bash session before continuing, so that these environment variables are picked up.
 
-Finally, run `aws configure` to enter your AWS credentials so that you can push lambda layers up to AWS below. Note that the credentials you provide must be for an [IAM user](https://console.aws.amazon.com/iam/home#/users) that has the AWSLambdaFullAccess permissions (you can actually be more granular than that, the key permission is lambda:PublishLayerVersion) and also IAMFullAccess to create roles and permissions for your Lambda functions (again, you can be more granular if you wish). You create a user and retrieve the user secret and key from the web console. 
+Finally, run `aws configure` to enter your AWS credentials so that you can push lambda layers up to AWS below. Note that the credentials you provide must be for an [IAM user](https://console.aws.amazon.com/iam/home#/users) that has the AWSLambdaFullAccess permissions (you can actually be more granular than that, the key permission is lambda:PublishLayerVersion) and also IAMFullAccess to create roles and permissions for your Lambda functions (again, you can be more granular if you wish). You can create such a user and retrieve the user secret and key from the web console. 
 
 ## Building The Dependencies
 
@@ -179,8 +179,7 @@ mv /opt/R/lib64/R/library/lattice /opt/local/lib/R/site-library
 
 ```
 
-To allow use of these packages "out of the box", we need to edit `/opt/R/lib64/R/etc/Renviron` to comment out any existing R_LIB_USER definitions and add our site-library. 
-The resulting passage of Renviron should look approximately like this:
+To allow use of these packages "out of the box", we need to edit `/opt/R/lib64/R/etc/Renviron` to comment out any existing R_LIB_USER definitions and add our site-library. The resulting passage of Renviron should look approximately like this:
 
 ```
 R_LIBS_USER=${R_LIBS_USER-'/opt/local/lib/R/site-library'}
@@ -202,8 +201,7 @@ We now need to create `/opt/bootstrap` that Lambda will call to kick off our new
 # we can add python dependencies here later if needed
 export PYTHONPATH=/opt/python
 
-# Convert ".handler" to ".r" (isn't technically needed, but allows us 
-# to name scripts with .r suffix like usual)
+# Convert ".handler" to ".r" (isn't technically needed, but allows us to name scripts with .r suffix like usual)
 SCRIPT=$LAMBDA_TASK_ROOT/$(echo "$_HANDLER" | cut -d. -f1).r
 
 while true
@@ -229,7 +227,7 @@ Obviously, we could get a lot more fancy by sending the script as a payload with
 
 # Package It Up
 
-Due to size constraints, we need to put R, our extra libraries, and its dependencies in separate layers, so we create two zipfiles (moving the aws folder out of the way as we do so).
+Due to size constraints, we need to put R, our extra libraries, and its dependencies in separate layers, so we create three zipfiles (moving the aws folder out of the way as we do so).
 
 ```
 sudo -s
@@ -289,7 +287,11 @@ Then run this command:
 aws iam create-role --role-name Lambda-R-Role --asume-role-policy-document file://trust_policy.json
 ```
 
-You can then create a new lambda function through the AWS web console or the command line client. You will need a handler (R script) to call. For starters, we can try:
+If the R script you use as your Lambda Function (see below) accesses other AWS resources (e.g. S3), you will need to add additional permissions to this role accordingly.
+
+# Running R Script as Lambda Function
+
+You can now create a new lambda function through the AWS web console or the command line client. You will need a handler (R script) to call. For starters, we can try:
 
 ```
 print("Hello from planet lambdar")
@@ -349,4 +351,4 @@ Memory Size: 128 MB	Max Memory Used: 98 MB
 
 # Troubleshooting
 
-If the above does not work, examine the log messages. The most common problems I encounter relate to role permissions. Your lambda functions must run under an IAM role that has permission to execute lambda functions. As you add functionality in your R scripts, you will need to be sure the role has permissions to access any AWS resources your script needs (such as S3 access, etc.)
+If the above does not work, examine the log messages. The most common problems I encounter relate to role permissions. Your lambda functions must run under an IAM role that has permission to execute lambda functions. As you add functionality in your R scripts, you will need to be sure the role has permissions to access any AWS resources your script needs (such as S3 access, etc.) Also examine the logs to make sure you did not exceed your time out or memory limits and adjust accordingly. You can adjust your function settings via the web console or the [AWS CLI at the command line](https://awscli.amazonaws.com/v2/documentation/api/latest/reference/lambda/update-function-configuration.html). 
