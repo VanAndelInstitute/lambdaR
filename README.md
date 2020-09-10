@@ -1,10 +1,6 @@
 # Overview
 
-AWS Lambda now supports [bring your own runtime](https://aws.amazon.com/blogs/aws/new-for-aws-lambda-use-any-programming-language-and-share-common-components/) via there minimalist runtime API. The basic idea is that you create a layer containing your runtime components, and an executable `bootstrap` script that glues together the task request and your runtime.
-
-Pretty basic in concept, but putting the pieces together for using the R runtime took a little effort.  The steps are described here.
-
-Note that you only need to do this once.  When you have a functional R runtime layer, you can use that layer for any lambda functions you create that require the R runtime.
+AWS Lambda now supports [bring your own runtime](https://aws.amazon.com/blogs/aws/new-for-aws-lambda-use-any-programming-language-and-share-common-components/) via there minimalist runtime API. The basic idea is that you create a layer containing your runtime components, and an executable `bootstrap` script that glues together the task request and your runtime. Pretty basic in concept, but putting the pieces together for using the R runtime took a little effort.  The steps are described here. Note that you only need to do this once.  When you have a functional R runtime layer, you can use that layer for any lambda functions you create that require the R runtime.
 
 # Limitations
 
@@ -12,7 +8,7 @@ The approach detailed below does not include support for Rcpp (nor installing pa
 
 # Quick Start
 
-Details are given below on building the runtime environment to generate the lambda layers required, containing the system dependencies, R, and R packages (in three layers to keep each under the limit of 50M). However, the resulting layers are also included in this repository. For those not interested in the details, you can skip to [deployment](#deployment). Note that the credentials you provide must be for an IAM user that has the AWSLambdaFullAccess permissions (you can actually be more granular than that, the key permission is lambda:PublishLayerVersion) and also IAMFullAccess to create roles and permissions for your Lambda functions (again, you can be more granular if you wish).
+Details are given below on building the runtime environment to generate the lambda layers required. These layers contain the system dependencies, R, and R packages (in three layers to keep each under the limit of 50M). However, the resulting layers are also included in this repository. For those not interested in the details, you can skip to [deployment](#deployment). 
 
 # Building Tools and Dependencies
 
@@ -130,9 +126,7 @@ sudo cp /usr/lib64/libquadmath.so.0 /opt/lib
 
 ## Building R
 
-Now we will build R with most options inactivated (because layers must be <50MB zipped). You can tweak these options to suit your needs, but you may need to do additional pruning after building to get your zip file under 50MB.  Hopefully, larger layers will be supported by AWS soon.
-
-Note that after issuing the "make" command, it is a good time to go get a cup of coffee.
+Now we will build R with most options inactivated (because layers must be <50MB zipped). You can tweak these options to suit your needs, but you may need to do additional pruning after building to get your zip file under 50MB.  Hopefully, larger layers will be supported by AWS in the future. Note that after issuing the "make" command, it is a good time to go get a cup of coffee.
 
 ```
 wget https://cran.r-project.org/src/base/R-4/R-4.0.2.tar.gz
@@ -146,7 +140,8 @@ make
 sudo make install
 cd ..
 ```
-Let's prune a couple things out we don't need.
+
+Let's prune a couple things out we don't need to stay under 50MB zipped.
 
 ```
 sudo -s
@@ -162,8 +157,7 @@ mv /opt/R/lib64/R/library/DESCRIPTION /opt/R/lib64/R/library/translations/
 
 ## Additional Libraries
 
-We will add the aws.s3 library and its dependencies (unlike the botor package, aws.s3 does not rely on Python. The paws package is another good option.) However, 
-to stay under size limits, we are going to want to install additional libraries under a separate directory.
+We will add the aws.s3 library and its dependencies. However, to stay under size limits, we are going to want to install additional libraries under a separate directory.
 
 ```
 sudo -s
@@ -197,7 +191,7 @@ R_LIBS_USER=${R_LIBS_USER-'/opt/local/lib/R/site-library'}
 
 # Bootstrap
 
-We now need to create `/opt/bootstrap` that Lambda will call to kick off our new runtime.  While not complicated, the `bootstrap` script is the magic sauce that allows a wide range of runtimes to be shoe-horned into the Lambda architecture.  The `bootstrap` file below parses the handler specified by your Lambda functions (e.g. "test.handler"), reformats that to the name of an R script (e.g. "test.r") and then executes that script via `/opt/R/bin/Rscript`. (Note that the corresponding script must be provided along with your Lambda function.  When you create a new Lambda function using the AWS web console, you are prompted for a zip file containing this script.) It also retrieves metadata about the request, and sends the response back to let Lambda know it is finished.  Create the following file as root.
+We now need to create `/opt/bootstrap` that Lambda will call to kick off our new runtime.  While not complicated, the `bootstrap` script is the magic sauce that allows a wide range of runtimes to be shoe-horned into the Lambda architecture.  The `bootstrap` file below parses the handler specified by your Lambda functions (e.g. "test.handler"), reformats that to the name of an R script (e.g. "test.r") and then executes that script via `/opt/R/bin/Rscript`. (Note that the corresponding script must be provided along with your Lambda function.  When you create a new Lambda function using the AWS web console, you are prompted for a zip file containing this script. Alternatively, you can upload it at the command line as demonstrated below.) It also retrieves metadata about the request, and sends the response back to let Lambda know it is finished.  Create the following `bootstrap` file as root.
 
 ```
 #!/bin/sh
@@ -235,7 +229,7 @@ Obviously, we could get a lot more fancy by sending the script as a payload with
 
 # Package It Up
 
-Due to size constraints, we need to put R, our extra libraries, and its dependencies in separate layers, so we create two zipfiles (moving the aws folder out of the way as we do so)
+Due to size constraints, we need to put R, our extra libraries, and its dependencies in separate layers, so we create two zipfiles (moving the aws folder out of the way as we do so).
 
 ```
 sudo -s
@@ -255,12 +249,11 @@ mv ../local_hold local
 
 ## AWS Credentials
 
-If you have skipped over the above steps and just want to use the pre-made layers included in this repo, make sure you have run `aws configure` to enter your AWS credentials (otherwise the below will not work). As noted above, the credentials you provide must be for an [IAM user](https://console.aws.amazon.com/iam/home#/users) that has the AWSLambdaFullAccess permissions (you can actually be more granular than that, the key permission is lambda:PublishLayerVersion) and also IAMFullAccess to create roles and permissions for your Lambda functions (again, you can be more granular if you wish). You create a user and retrieve the user secret and key from the web console. 
-
+If you have skipped over the above steps and just want to use the pre-made layers included in this repo, make sure you have run `aws configure` to enter your AWS credentials (otherwise the below will not work). As noted above, the credentials you provide must be for an [IAM user](https://console.aws.amazon.com/iam/home#/users) that has the AWSLambdaFullAccess permissions (you can actually be more granular than that, the key permission is lambda:PublishLayerVersion) and also IAMFullAccess to create roles and permissions for your Lambda functions (again, you can be more granular if you wish). You can create such a user and retrieve the user secret and key from the web console. 
 
 ## Push Layers To AWS
 
-Assuming you have already run `aws configure` and entered your credentials, we can now push these to lambda layers.
+Assuming you have already run `aws configure` and entered your credentials, we can now push these lambda layers up to AWS.
 
 ```
 aws lambda publish-layer-version --layer-name subsystem --zip-file fileb://../subsystem.zip
@@ -273,7 +266,7 @@ Take note of the ARNs (Amazon Resource Names) returned by these functions as you
 
 ## Execution Role
 
-You will need to create an AWS role with which to execute your lambda function. When you create a lambda function through the AWS web console, this role is created for you. But you can also do it from the command line. First create a file name `trust_policy.json` with these content:
+You will need to create an AWS role with which to execute your lambda function. When you create a lambda function through the AWS web console, this role is created for you. But you can also do it from the command line. First create a file named `trust_policy.json` with these contents:
 
 ```
 {
@@ -302,16 +295,15 @@ You can then create a new lambda function through the AWS web console or the com
 print("Hello from planet lambdar")
 ```
 
-Save that as test.r, and zip it
+Save that as test.r, and zip it.
 
 ```
 zip test.zip test.r
 ```
 
-Now we can deploy our function. Note the default timeout is 3 seconds which is not quite long enough for our runtime to load. We increase this to 10 seconds. (4 seconds is actually enough for this trivial example, but 10 will give more room for more complex functions. Very complex functions may require more time. The maximum execution time is 900 seconds.)Note also you will need to substitute the layer ARNs below with the actual ARNs returned by the [publish layer commands above](#push-layers-to-aws). 
+Now we can deploy our function. Note the default timeout is 3 seconds which is not quite long enough for our runtime to load. We increase this to 10 seconds in the example below. (4 seconds is actually enough for this trivial example, but 10 will give more room for more complex functions. Very complex functions may require more time. The maximum execution time is 900 seconds.) Note also you will need to substitute the layer ARNs below with the actual ARNs returned by the [publish layer commands above](#push-layers-to-aws). 
 
 ```
-
 aws lambda create-function \
     --role arn:aws:iam::436870896339:role/Lambda-R-Role \
     --layers "arn:aws:lambda:us-east-1:436870896339:layer:R:1" "arn:aws:lambda:us-east-1:436870896339:layer:r_lib:1" "arn:aws:lambda:us-east-1:436870896339:layer:subsystem:1" \
@@ -319,13 +311,10 @@ aws lambda create-function \
     --runtime provided \
     --timeout 10 \
     --zip-file fileb://test.zip \
-    --handler test.handler 
-    
+    --handler test.handler
 ```
 
-You can then go to the [lambda web console](https://console.aws.amazon.com/lambda/home) and open your function. You can click "test" and create a new test event. For this basic function, you do not need any parameters, but you can leave the default key/value pairs listed. 
-
-Alternatively, you can execute your function from the command line. The output will go to out.json in the example below.
+You can then go to the [lambda web console](https://console.aws.amazon.com/lambda/home) and open your function. You can click "test" and create a new test event. For this basic function, you do not need any parameters, but you can leave the default key/value pairs listed. Alternatively, you can execute your function from the command line. The output will go to out.json in the example below.
 
 ```
 aws lambda invoke \
@@ -334,7 +323,7 @@ aws lambda invoke \
   out.json  
 ```
 
-If you want a little more detail then "OK",  you can request the log. However, this is returned base64 encoded, so must be decoded as follows as demonstrated by pjb on [stack overflow](https://stackoverflow.com/questions/52555724)
+If you want a little more detail then "OK",  you can request the log. However, this is returned base64 encoded, so must be decoded as follows (as demonstrated by pjb on [stack overflow](https://stackoverflow.com/questions/52555724)).
 
 ```
 aws lambda invoke \
@@ -357,6 +346,7 @@ END RequestId: bc9de9a2-99aa-4a97-a602-8f4e087f1949
 REPORT RequestId: bc9de9a2-99aa-4a97-a602-8f4e087f1949	Duration: 3084.78 ms	Billed Duration: 3100 ms
 Memory Size: 128 MB	Max Memory Used: 98 MB
 ```
+
 # Troubleshooting
 
 If the above does not work, examine the log messages. The most common problems I encounter relate to role permissions. Your lambda functions must run under an IAM role that has permission to execute lambda functions. As you add functionality in your R scripts, you will need to be sure the role has permissions to access any AWS resources your script needs (such as S3 access, etc.)
