@@ -20,7 +20,6 @@ We want to build our toolchain in the same environment used by Lambda.  So creat
 curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
 unzip awscliv2.zip
 sudo ./aws/install
-
 ```
 
 You will also need the development tools, and, while we are at it, an editor:
@@ -284,10 +283,18 @@ You will need to create an AWS role with which to execute your lambda function. 
 Then run this command:
 
 ```
-aws iam create-role --role-name Lambda-R-Role --asume-role-policy-document file://trust_policy.json
+aws iam create-role \
+  --role-name Lambda-R-Role \
+  --assume-role-policy-document file://trust_policy.json
 ```
 
-If the R script you use as your Lambda Function (see below) accesses other AWS resources (e.g. S3), you will need to add additional permissions to this role accordingly.
+If the R script you use as your Lambda Function (see below) accesses other AWS resources (e.g. S3), you will need to add additional permissions to this role accordingly. For now, we will want to add permissions to log to CloudWatch so we can troubleshoot down the road.
+
+```
+aws iam attach-role-policy \
+    --role-name Lambda-R-Role \
+    --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+```
 
 # Running R Script as Lambda Function
 
@@ -352,3 +359,163 @@ Memory Size: 128 MB	Max Memory Used: 98 MB
 # Troubleshooting
 
 If the above does not work, examine the log messages. The most common problems I encounter relate to role permissions. Your lambda functions must run under an IAM role that has permission to execute lambda functions. As you add functionality in your R scripts, you will need to be sure the role has permissions to access any AWS resources your script needs (such as S3 access, etc.) Also examine the logs to make sure you did not exceed your time out or memory limits and adjust accordingly. You can adjust your function settings via the web console or the [AWS CLI at the command line](https://awscli.amazonaws.com/v2/documentation/api/latest/reference/lambda/update-function-configuration.html). 
+
+# A More Useful Example
+
+Presumably you want to do more with Lambda and R then say hello. In the following example, we will monitor an S3 bucket and do something with RDS files deposited there. For our purposes here, we will assume the RDS contains a vector of numbers that we can take the average of. 
+
+## Creating the Handler
+Save the following as `s3_watcher.r`
+
+```
+library(aws.s3)
+
+# Fetch the details of the event that is triggering this function
+ROOT <- Sys.getenv("AWS_LAMBDA_RUNTIME_API")
+EVENT_DATA <- httr::GET(paste0("http://", ROOT, "/2018-06-01/runtime/invocation/next"))
+REQUEST_ID <- EVENT_DATA$headers$`lambda-runtime-aws-request-id`
+
+# Since it's an S3 event that will trigger this function, 
+# we can get the details of the S3 item
+res <- httr::content(EVENT_DATA)
+bucket <- res$Records[[1]]$s3$bucket$name
+key <- res$Records[[1]]$s3$object$key
+
+# Now we can load the item that triggered the event and do something with it.
+dat <- s3readRDS(key, bucket)  
+average <- mean(dat)
+
+object <- paste0("Average = ", average)
+outkey = gsub("\\.rds", "\\.txt", key)
+outbucket = paste0(bucket, "-output")
+
+res <- put_object(paste0("Average = ", average), 
+           object = outkey, 
+           bucket = outbucket)
+
+# And send response. 
+httr::POST(paste0("http://", 
+                  ROOT, 
+                  "/2018-06-01/runtime/invocation/",
+                  REQUEST_ID, 
+                  "/response"),
+           body = '{"average": average}',
+           encode="raw")
+
+```
+
+And zip it. 
+
+```
+zip s3_watcher.zip s3_watcher.r
+```
+
+We can now create a Lambda function with this script/handler. Substitute the ARNs for the IAM Role and layers you have created previously.
+
+```
+aws lambda create-function \
+    --role arn:aws:iam::436870896339:role/Lambda-R-Role \
+    --layers "arn:aws:lambda:us-east-1:436870896339:layer:R:1" "arn:aws:lambda:us-east-1:436870896339:layer:r_lib:1" "arn:aws:lambda:us-east-1:436870896339:layer:subsystem:1" \
+    --function-name s3_watcher \
+    --runtime provided \
+    --timeout 10 \
+    --zip-file fileb://s3_watcher.zip \
+    --handler s3_watcher.handler
+```
+
+## Addding Permissions
+
+For this to work, we must add S3 permission to the Lambda execution role we created earlier. Here we are granting full S3 access to the role (to allow writing to S3 in the future), but you might consider something more granular. Make sure the `role-name` matches the name of the role you created earlier for your Lambda functions.
+
+```
+aws iam attach-role-policy \
+    --role-name Lambda-R-Role \
+    --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess
+
+```
+
+We must also do the reverse: allow S3 to trigger our Lambda function. This permission is added to the function, not the role.
+
+```
+aws lambda add-permission \
+  --function-name s3_watcher \
+  --action lambda:InvokeFunction \
+  --statement-id s3 \
+  --principal s3.amazonaws.com \
+  --output text
+```
+
+## Setting Up Buckets
+
+Now let's create an S3 bucket to receive our RDS objects and a bucket to put our results. Again, we can do it from the web console, or the command line. Note that you will need to pick a different bucket name and S3 bucket names must be unique accross all AWS users.
+
+```
+aws s3api create-bucket --bucket rlam1 \
+  --region us-east-1 
+
+aws s3api create-bucket --bucket rlam1-output \
+  --region us-east-1 
+```
+
+Finally, we need to add a trigger to our S3 bucket. Save the following in a file called `s3_trigger.json`. You will need to substitute the actual ARN for the lambda function you created above. 
+
+```
+{
+"LambdaFunctionConfigurations": [
+    {
+      "Id": "s3RDSTrigger",
+      "LambdaFunctionArn": "arn:aws:lambda:us-east-1:436870896339:function:s3_watcher",
+      "Events": ["s3:ObjectCreated:*"],
+      "Filter": {
+        "Key": {
+          "FilterRules": [
+            {
+              "Name": "suffix",
+              "Value": "rds"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
+```
+
+And then apply the trigger to our bucket. Again, substitute the actual name of the bucket you created.
+
+```
+aws s3api put-bucket-notification-configuration \
+  --bucket  rlam1 \
+  --notification-configuration file://s3_trigger.json 
+```
+
+We should also create a log group for our function so we can see what is going on.
+
+```
+aws logs create-log-group \
+  --log-group-name /aws/lambda/s3_watcher
+```
+
+## Try It Out
+Finally, we can test it. Within an R session, create an RDS file:
+
+```
+saveRDS(rnorm(20), "random.rds")
+```
+
+Then send it to our bucket. 
+
+```
+aws s3 cp random.rds  s3://rlam1
+```
+
+Give the lambda function a few seconds to finish and then retrieve the result:
+
+```
+aws s3 cp s3://rlam1-output/random.txt -
+
+```
+
+This should yield something like `Average = 0.375666852940211` (the value will vary).
+
+
